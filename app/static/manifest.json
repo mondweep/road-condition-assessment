@@ -1,0 +1,11 @@
+{
+  "name": "Road Recorder",
+  "short_name": "Road Recorder",
+  "start_url": "/record",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111418",
+  "theme_color": "#111418",
+  "icons": [{ "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

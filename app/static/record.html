@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111418">
+<link rel="manifest" href="/static/manifest.json">
+<title>Road Recorder</title>
+<style>
+  :root { --bg:#111418; --card:#1b2027; --fg:#e8ecf1; --mut:#8b95a3; --ok:#2fbf71; --warn:#f2c14e; --bad:#e5484d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         padding:16px 16px calc(16px + env(safe-area-inset-bottom)); }
+  h1 { font-size:18px; margin:0 0 12px; display:flex; justify-content:space-between; align-items:center; }
+  h1 a { color:var(--mut); font-size:14px; font-weight:400; }
+  .card { background:var(--card); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .stat .v { font-size:28px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .stat .l { color:var(--mut); font-size:13px; }
+  button#go { width:100%; padding:22px; font-size:20px; font-weight:650; border:0; border-radius:14px; background:var(--ok); color:#06210f; }
+  button#go.on { background:var(--bad); color:#fff; }
+  label { display:block; color:var(--mut); font-size:13px; margin:8px 0 4px; }
+  input { width:100%; padding:10px; border-radius:10px; border:1px solid #2c333d; background:#0d1014; color:var(--fg); font-size:16px; }
+  .row { display:flex; justify-content:space-between; color:var(--mut); font-size:14px; padding:3px 0; }
+  .row b { color:var(--fg); font-weight:500; }
+  #cond { font-size:22px; font-weight:650; }
+  .good{color:var(--ok)} .fair{color:var(--warn)} .poor{color:#f4813f} .very_poor{color:var(--bad)}
+  #msg { color:var(--warn); font-size:14px; min-height:1.2em; }
+  .note { color:var(--mut); font-size:13px; }
+</style>
+</head>
+<body>
+<h1>Road Recorder <a href="/">Map →</a></h1>
+
+<div class="card" id="setup">
+  <label for="key">Ingest key</label>
+  <input id="key" autocomplete="off" placeholder="paste the key you were given">
+  <label for="veh">Vehicle (optional)</label>
+  <input id="veh" placeholder="e.g. Bolero, Swift, bus">
+</div>
+
+<button id="go">Start recording</button>
+<p id="msg"></p>
+
+<div class="card">
+  <div class="grid">
+    <div class="stat"><div class="v" id="spd">–</div><div class="l">km/h</div></div>
+    <div class="stat"><div class="v" id="rough">–</div><div class="l">roughness (m/s²)</div></div>
+  </div>
+  <div style="margin-top:8px">Road now: <span id="cond">–</span></div>
+</div>
+
+<div class="card">
+  <div class="row">GPS accuracy <b id="gps">–</b></div>
+  <div class="row">Motion sample rate <b id="hz">–</b></div>
+  <div class="row">Windows waiting to upload <b id="q">0</b></div>
+  <div class="row">Uploaded <b id="up">0</b></div>
+  <div class="row">Last upload <b id="lu">–</b></div>
+</div>
+
+<p class="note">Mount the phone firmly (dashboard or windscreen holder) — a loose phone in a pocket or cupholder ruins the readings. Keep this screen open; browsers pause sensors when the screen locks. Readings are saved on the phone and upload whenever there's signal. Don't operate the phone while driving.</p>
+
+<script src="/static/recorder.js"></script>
+</body>
+</html>

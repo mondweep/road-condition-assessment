@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Road Conditions – Assam</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --mut:#5d6773; --line:#e3e6ea; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16191d; --fg:#e8ecf1; --mut:#97a1ad; --line:#2a3038; } }
+  html, body { margin:0; height:100%; font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  #map { position:absolute; inset:0; }
+  .panel { position:absolute; z-index:1000; top:12px; left:12px; right:12px; max-width:340px; background:var(--bg);
+           border:1px solid var(--line); border-radius:12px; padding:12px 14px; box-shadow:0 4px 18px rgba(0,0,0,.15); }
+  .panel h1 { font-size:16px; margin:0 0 4px; }
+  .panel p { margin:0 0 8px; color:var(--mut); font-size:13px; }
+  .legend { display:flex; flex-wrap:wrap; gap:6px 12px; font-size:13px; }
+  .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; background:var(--c); }
+  .stats { margin-top:8px; font-size:13px; color:var(--mut); }
+  .panel a { color:inherit; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <h1>Road conditions</h1>
+  <p>Crowd-sensed from phone motion and GPS while driving. Each dot is a ~40 m stretch of road.</p>
+  <div class="legend">
+    <span style="--c:#1a9850">Good</span><span style="--c:#e0b100">Fair</span>
+    <span style="--c:#f46d43">Poor</span><span style="--c:#a50026">Very poor</span>
+    <span style="--c:transparent;">◯ black ring = sharp jolt (likely pothole)</span>
+  </div>
+  <div class="stats" id="stats">Loading…</div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const COLORS = { good:"#1a9850", fair:"#e0b100", poor:"#f46d43", very_poor:"#a50026" };
+  const map = L.map("map", { zoomControl:false }).setView([26.2, 92.9], 7);
+  L.control.zoom({ position:"bottomright" }).addTo(map);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom:19, attribution:"&copy; OpenStreetMap contributors" }).addTo(map);
+  const layer = L.layerGroup().addTo(map);
+  let fitted = false;
+
+  async function load() {
+    let cells = [];
+    try { cells = await (await fetch("/api/cells")).json(); } catch { return; }
+    layer.clearLayers();
+    const counts = { good:0, fair:0, poor:0, very_poor:0 }; let events = 0;
+    for (const c of cells) {
+      counts[c.condition]++; events += c.events;
+      L.circleMarker([c.lat, c.lon], {
+        radius: 6, weight: c.events ? 2.5 : 0, color: "#000", fillColor: COLORS[c.condition], fillOpacity: .9,
+      }).bindPopup(
+        `<b>${c.condition.replace("_"," ")}</b><br>Roughness ${c.roughness} m/s²<br>` +
+        `${c.n} readings · ${c.events} jolts<br>Last seen ${c.last_seen ? new Date(c.last_seen).toLocaleString() : "–"}`
+      ).addTo(layer);
+    }
+    if (cells.length && !fitted) { map.fitBounds(cells.map(c => [c.lat, c.lon]), { padding:[40,40], maxZoom:15 }); fitted = true; }
+    document.getElementById("stats").innerHTML = cells.length
+      ? `${cells.length} road cells · ${counts.poor + counts.very_poor} poor or worse · ${events} jolts`
+      : `No data yet. <a href="/record">Start recording →</a>`;
+  }
+  load(); setInterval(load, 60000);
+</script>
+</body>
+</html>
