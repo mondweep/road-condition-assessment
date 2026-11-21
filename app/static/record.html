@@ -5,14 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111418">
 <link rel="manifest" href="/static/manifest.json">
+<link rel="icon" href="/static/icon.svg">
 <title>Road Recorder</title>
 <style>
-  :root { --bg:#111418; --card:#1b2027; --fg:#e8ecf1; --mut:#8b95a3; --ok:#2fbf71; --warn:#f2c14e; --bad:#e5484d; }
+  :root { --bg:#111418; --card:#1b2027; --fg:#e8ecf1; --mut:#8b95a3; --ok:#2fbf71; --warn:#f2c14e; --bad:#e5484d; --line:#2c333d; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-         padding:16px 16px calc(16px + env(safe-area-inset-bottom)); }
-  h1 { font-size:18px; margin:0 0 12px; display:flex; justify-content:space-between; align-items:center; }
-  h1 a { color:var(--mut); font-size:14px; font-weight:400; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         padding:16px 16px calc(16px + env(safe-area-inset-bottom)); max-width:560px; margin:0 auto; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  header h1 { font-size:18px; margin:0; }
+  header nav { display:flex; gap:10px; align-items:center; }
+  header a { color:var(--mut); font-size:14px; text-decoration:none; }
+  #help { width:32px; height:32px; border-radius:50%; border:1px solid var(--line); background:transparent; color:var(--fg); font-size:16px; font-weight:650; }
   .card { background:var(--card); border-radius:14px; padding:14px; margin-bottom:12px; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   .stat .v { font-size:28px; font-weight:650; font-variant-numeric:tabular-nums; }
@@ -20,23 +24,45 @@
   button#go { width:100%; padding:22px; font-size:20px; font-weight:650; border:0; border-radius:14px; background:var(--ok); color:#06210f; }
   button#go.on { background:var(--bad); color:#fff; }
   label { display:block; color:var(--mut); font-size:13px; margin:8px 0 4px; }
-  input { width:100%; padding:10px; border-radius:10px; border:1px solid #2c333d; background:#0d1014; color:var(--fg); font-size:16px; }
-  .row { display:flex; justify-content:space-between; color:var(--mut); font-size:14px; padding:3px 0; }
-  .row b { color:var(--fg); font-weight:500; }
+  input { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line); background:#0d1014; color:var(--fg); font-size:16px; }
+  .row { display:flex; justify-content:space-between; gap:12px; color:var(--mut); font-size:14px; padding:3px 0; }
+  .row b { color:var(--fg); font-weight:500; text-align:right; }
   #cond { font-size:22px; font-weight:650; }
   .good{color:var(--ok)} .fair{color:var(--warn)} .poor{color:#f4813f} .very_poor{color:var(--bad)}
   #msg { color:var(--warn); font-size:14px; min-height:1.2em; }
   .note { color:var(--mut); font-size:13px; }
+  .safety { border-left:3px solid var(--warn); padding:8px 12px; background:#1f1c12; border-radius:6px; font-size:14px; margin-bottom:12px; }
+
+  #onb { position:fixed; inset:0; background:rgba(5,7,9,.82); display:flex; align-items:flex-end; justify-content:center; z-index:10; padding:16px; }
+  #onb[hidden] { display:none; }
+  .sheet { background:var(--card); border-radius:18px; padding:20px; width:100%; max-width:520px; }
+  .sheet h2 { margin:6px 0 8px; font-size:20px; }
+  .sheet p, .sheet li { color:#c8d0da; font-size:15px; }
+  .sheet ul { padding-left:20px; margin:8px 0; }
+  .sheet .big { font-size:40px; }
+  .sheet .nav { display:flex; justify-content:space-between; align-items:center; margin-top:16px; }
+  .sheet .nav button { padding:10px 18px; border-radius:10px; border:0; font-size:16px; }
+  #onb-next { background:var(--ok); color:#06210f; font-weight:650; }
+  #onb-back, #onb-skip { background:transparent; color:var(--mut); }
+  #onb-dots { color:var(--mut); letter-spacing:2px; font-size:12px; }
+  .sw { display:inline-block; width:12px; height:12px; border-radius:50%; vertical-align:-1px; margin-right:4px; }
 </style>
 </head>
 <body>
-<h1>Road Recorder <a href="/">Map →</a></h1>
+<header>
+  <h1>Road Recorder</h1>
+  <nav><a href="/">Map →</a><button id="help" aria-label="How to use">?</button></nav>
+</header>
+
+<div class="safety">Set up and press Start <b>before</b> you drive. Don't touch the phone while moving — in the UK that's illegal even at traffic lights.</div>
 
 <div class="card" id="setup">
-  <label for="key">Ingest key</label>
-  <input id="key" autocomplete="off" placeholder="paste the key you were given">
+  <div id="keyrow">
+    <label for="key">Ingest key</label>
+    <input id="key" autocomplete="off" placeholder="the key from your invitation link">
+  </div>
   <label for="veh">Vehicle (optional)</label>
-  <input id="veh" placeholder="e.g. Bolero, Swift, bus">
+  <input id="veh" placeholder="e.g. Swift, Bolero, bus, auto-rickshaw">
 </div>
 
 <button id="go">Start recording</button>
@@ -45,21 +71,82 @@
 <div class="card">
   <div class="grid">
     <div class="stat"><div class="v" id="spd">–</div><div class="l">km/h</div></div>
-    <div class="stat"><div class="v" id="rough">–</div><div class="l">roughness (m/s²)</div></div>
+    <div class="stat"><div class="v" id="rough">–</div><div class="l">roughness</div></div>
   </div>
   <div style="margin-top:8px">Road now: <span id="cond">–</span></div>
 </div>
 
 <div class="card">
+  <div class="row">Privacy <b id="trim">–</b></div>
+  <div class="row">Swerves detected this trip <b id="sw">0</b></div>
   <div class="row">GPS accuracy <b id="gps">–</b></div>
-  <div class="row">Motion sample rate <b id="hz">–</b></div>
-  <div class="row">Windows waiting to upload <b id="q">0</b></div>
+  <div class="row">Motion sensors <b id="hz">–</b></div>
+  <div class="row">Waiting to upload <b id="q">0</b></div>
   <div class="row">Uploaded <b id="up">0</b></div>
   <div class="row">Last upload <b id="lu">–</b></div>
 </div>
 
-<p class="note">Mount the phone firmly (dashboard or windscreen holder) — a loose phone in a pocket or cupholder ruins the readings. Keep this screen open; browsers pause sensors when the screen locks. Readings are saved on the phone and upload whenever there's signal. Don't operate the phone while driving.</p>
+<p class="note">Your phone records motion and location only — no camera, no microphone. The first 300 m of every trip and roughly the last 400 m are never uploaded, so your start and end points stay private. The public map only shows road stretches, never individual trips. Uploads carry a random device ID and the vehicle type you enter; no name or phone number.</p>
 
+<div id="onb" hidden>
+  <div class="sheet" role="dialog" aria-label="How to use Road Recorder">
+    <section class="step">
+      <div class="big">🛣️</div>
+      <h2>Map bad roads just by driving</h2>
+      <p>Your phone feels how the vehicle moves and turns that into a road-condition map anyone can see.</p>
+      <ul>
+        <li><b>Shaking</b> shows how rough the road is</li>
+        <li><b>Sharp jolts</b> suggest potholes you hit</li>
+        <li><b>Swerves</b> mark potholes drivers avoid</li>
+        <li><b>Crawling and lurching</b> shows near-impassable stretches</li>
+      </ul>
+      <p>It uses vibration and GPS only, so it works at night and in dust, with no camera.</p>
+    </section>
+    <section class="step" hidden>
+      <div class="big">📱</div>
+      <h2>Mount the phone firmly</h2>
+      <ul>
+        <li>Use a dashboard or windscreen holder.</li>
+        <li><b>Not</b> in a pocket, cupholder, on the seat or held in your hand. A loose phone makes every road look terrible.</li>
+        <li>Any angle is fine. The app works out which way is up.</li>
+        <li>Plug in a charger. The screen has to stay on.</li>
+      </ul>
+    </section>
+    <section class="step" hidden>
+      <div class="big">▶️</div>
+      <h2>Press Start, then just drive</h2>
+      <ul>
+        <li>Press <b>Start recording</b> before setting off.</li>
+        <li><b>Don't touch the phone while moving.</b> Leave this screen open: if it locks or you switch apps, recording pauses.</li>
+        <li>Drive normally, including slowly on bad roads. Crawling counts too.</li>
+        <li>When you arrive, stop and press <b>Stop</b>. Readings upload whenever there's signal, so dead zones are fine.</li>
+      </ul>
+    </section>
+    <section class="step" hidden>
+      <div class="big">🗺️</div>
+      <h2>Reading the map</h2>
+      <p>
+        <span class="sw" style="background:#1a9850"></span>Good &nbsp;
+        <span class="sw" style="background:#e0b100"></span>Fair &nbsp;
+        <span class="sw" style="background:#f46d43"></span>Poor &nbsp;
+        <span class="sw" style="background:#a50026"></span>Very poor
+      </p>
+      <ul>
+        <li>A <b>black ring</b> means a sharp jolt was felt there, often a pothole (sometimes a speed breaker).</li>
+        <li>A <b>⚠ triangle</b> means drivers on several trips swerved there. Something is probably being avoided.</li>
+        <li>One trip is a hint. Several trips on the same road make it reliable, so drive your regular routes often.</li>
+      </ul>
+      <p class="note">Privacy: the start and end of every trip are never uploaded.</p>
+    </section>
+    <div class="nav">
+      <button id="onb-back">Back</button>
+      <span id="onb-dots"></span>
+      <span><button id="onb-skip">Skip</button><button id="onb-next">Next</button></span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/signals.js"></script>
 <script src="/static/recorder.js"></script>
 </body>
 </html>

@@ -4,39 +4,58 @@ Crowd-sensed road roughness for rural roads (pilot: Assam). A phone mounted in a
 
 ## How it works
 
-1. **Recorder (`/record`)** – a web app (PWA) on the phone.
-   - Reads the accelerometer at ~50–100 Hz. It estimates the gravity vector with a low-pass filter and projects acceleration onto it, so the phone can be mounted at any angle.
-   - Summarises each second into a *window*: vertical-acceleration std, peak, peak-to-peak, GPS position, speed and speed change.
-   - Buffers windows on the phone (up to ~7 h) and uploads every 20 s when there's signal.
-   - Keeps the screen awake. Browsers pause sensors when the screen locks.
-2. **Ingest API (`POST /api/ingest`)** – protected by the `X-Ingest-Key` header.
-   - Drops unusable windows: slower than ~7 km/h, GPS accuracy worse than 35 m, or too few samples.
-   - Scores the rest and aggregates them into geohash-8 cells (~38 × 19 m) in Firestore.
-3. **Map (`/`)** – public Leaflet/OpenStreetMap view.
-   - Colours each cell good, fair, poor or very poor.
-   - Rings cells that had sharp isolated jolts (likely potholes).
+The app is vibration- and GPS-based. It never uses the camera.
+
+1. **Recorder (`/record`)**: a web app (PWA) on the phone, with a first-run guide.
+   - Reads the accelerometer and gyroscope at ~50–100 Hz. It projects motion onto the gravity vector, so the phone can be mounted at any angle.
+   - Each second it summarises a *window*: vertical shaking (std, peak), distinct lurches, yaw rate, GPS position, speed and speed change.
+   - Detects **swerves** on the phone (`static/signals.js`). A swerve is a quick out-and-back steer on a straight road, ending on the same heading, with a small total swing. Bends and S-bends are rejected.
+   - **Privacy trimming:** nothing is uploaded until the phone is 300 m in a straight line from the trip start. The last ~400 m of driving are held back and discarded when the trip stops.
+   - Buffers windows on the phone (up to ~7 h) and uploads every 20 s when there's signal. Keeps the screen awake.
+2. **Ingest API (`POST /api/ingest`)**: protected by the `X-Ingest-Key` header. Scores each window and aggregates it into geohash-8 cells (~38 × 19 m) in Firestore.
+3. **Map (`/`)**: public Leaflet/OpenStreetMap view.
+   - Region buttons (Assam & NE India / UK / All).
+   - "Near me" asks for location only when tapped. The last view is remembered.
+   - "How this works" explains the method and its limits.
 
 ## Scoring (`app/scoring.py`)
 
-- `roughness = z_std × sqrt(30 / max(speed_kmh, 10))`. This is vertical shaking normalised to 30 km/h, since the same road shakes more at higher speed.
-- Condition classes:
+Scoring mode depends on speed:
 
-  | Roughness (m/s²) | Class |
-  |---|---|
-  | < 0.6 | good |
-  | < 1.2 | fair |
-  | < 2.5 | poor |
-  | otherwise | very poor |
+| Speed | Mode | Roughness |
+|---|---|---|
+| < ~3 km/h | stopped | skipped (GPS speed is noise) |
+| ~3–10 km/h | crawl | `1.2 × lurches/s` (capped at 4). A crawl with no lurches is skipped as likely traffic. |
+| ≥ ~10 km/h | normal | `z_std × sqrt(30 / max(km/h, 10))`, i.e. vertical shaking normalised to 30 km/h |
 
-- **Event:** a peak ≥ 4.5 m/s² that is also ≥ 3× the window's std.
+Thresholds are **per region**. Classes are good / fair / poor / very poor at these roughness values:
 
-These thresholds are **starting heuristics**. Tune them on labelled drives: note the true condition of known stretches, then compare. Vehicle suspension matters too; the `vehicle` field is stored so per-vehicle calibration can be added.
+| Region | Fair from | Poor from | Very poor from | Sharp-jolt peak |
+|---|---|---|---|---|
+| UK | 0.35 | 0.7 | 1.4 | 3.5 m/s² |
+| Assam & NE India (and default) | 0.6 | 1.2 | 2.5 | 4.5 m/s² |
+
+Cell-level signals:
+
+- **Sharp jolt:** a peak above the region's threshold that is also ≥ 3× the window std. Likely a pothole that was hit, or a speed breaker.
+- **Swerve hotspot:** ≥ 2 separate trips swerved in the cell, and they make up ≥ 30% of the trips through it. A single swerve (a cow, an overtake) is noise.
+
+All thresholds are **starting heuristics**. Tune them on labelled drives by noting the true condition of known stretches. The raw windows are stored, so everything can be re-scored.
+
+### Known limits
+
+- Potholes that every driver steers around are only visible through swerves.
+- Speed breakers look like potholes.
+- Tight hairpins could occasionally pass as swerves.
+- Vehicle suspension changes readings; the `vehicle` field is stored for later per-vehicle calibration.
+- Browsers pause sensors when the screen locks.
 
 ## Run locally
 
 ```bash
 pip install -r requirements.txt pytest httpx
 python -m pytest -q
+node --test tests/signals.test.js
 STORE=memory INGEST_KEY=dev uvicorn app.main:app --reload
 ```
 
@@ -52,7 +71,8 @@ The Cloud Run service account needs `roles/datastore.user` on the project.
 ## Data
 
 - `windows` – every usable 1-second window, with device, trip and vehicle. This is the raw evidence, kept for re-scoring.
-- `cells` – running sums per geohash-8 cell, used by the map.
+- `cells` – running sums per geohash-8 cell, plus the trip IDs seen and the trip IDs that swerved there.
+- `meta/state` – a version counter bumped on each ingest. The map API re-reads all cells only when it changes, which keeps Firestore reads inside the free quota.
 
 ## Next steps
 

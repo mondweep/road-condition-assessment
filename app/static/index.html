@@ -3,65 +3,172 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Road Conditions – Assam</title>
+<title>Road Conditions</title>
+<link rel="icon" href="/static/icon.svg">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-  :root { --bg:#ffffff; --fg:#1b1f24; --mut:#5d6773; --line:#e3e6ea; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#16191d; --fg:#e8ecf1; --mut:#97a1ad; --line:#2a3038; } }
+  :root { --bg:#ffffff; --fg:#1b1f24; --mut:#5d6773; --line:#e3e6ea; --chip:#f2f4f6; --acc:#1b1f24; --acc-fg:#fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16191d; --fg:#e8ecf1; --mut:#97a1ad; --line:#2a3038; --chip:#20252b; --acc:#e8ecf1; --acc-fg:#16191d; } }
   html, body { margin:0; height:100%; font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
   #map { position:absolute; inset:0; }
-  .panel { position:absolute; z-index:1000; top:12px; left:12px; right:12px; max-width:340px; background:var(--bg);
+  .panel { position:absolute; z-index:1000; top:12px; left:12px; right:12px; max-width:360px; background:var(--bg);
            border:1px solid var(--line); border-radius:12px; padding:12px 14px; box-shadow:0 4px 18px rgba(0,0,0,.15); }
-  .panel h1 { font-size:16px; margin:0 0 4px; }
-  .panel p { margin:0 0 8px; color:var(--mut); font-size:13px; }
-  .legend { display:flex; flex-wrap:wrap; gap:6px 12px; font-size:13px; }
-  .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; background:var(--c); }
+  .panel h1 { font-size:16px; margin:0 0 6px; display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .panel h1 a, .linkbtn { color:var(--mut); font-size:13px; font-weight:400; background:none; border:0; padding:0; cursor:pointer; text-decoration:underline; font-family:inherit; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 8px; }
+  .chips button { border:1px solid var(--line); background:var(--chip); color:var(--fg); border-radius:999px; padding:5px 11px; font-size:13px; cursor:pointer; font-family:inherit; }
+  .chips button.on { background:var(--acc); color:var(--acc-fg); border-color:var(--acc); }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:13px; }
+  .legend .dot::before { content:""; display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; background:var(--c); vertical-align:-1px; }
+  .legend .ring::before { content:""; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; border:2px solid var(--fg); vertical-align:-1px; }
   .stats { margin-top:8px; font-size:13px; color:var(--mut); }
   .panel a { color:inherit; }
+  .hz { font-size:16px; line-height:16px; text-align:center; filter:drop-shadow(0 0 1px #fff); }
+  dialog { border:1px solid var(--line); border-radius:14px; max-width:560px; width:calc(100% - 32px); background:var(--bg); color:var(--fg); padding:18px 20px; }
+  dialog::backdrop { background:rgba(0,0,0,.45); }
+  dialog h2 { margin:0 0 8px; font-size:18px; }
+  dialog h3 { margin:14px 0 4px; font-size:15px; }
+  dialog p, dialog li { font-size:14px; color:var(--fg); }
+  dialog ul { padding-left:20px; margin:4px 0; }
+  dialog .close { float:right; }
 </style>
 </head>
 <body>
 <div id="map"></div>
 <div class="panel">
-  <h1>Road conditions</h1>
-  <p>Crowd-sensed from phone motion and GPS while driving. Each dot is a ~40 m stretch of road.</p>
+  <h1>Road conditions <span><button class="linkbtn" id="about-btn">How this works</button> · <a href="/record">Record</a></span></h1>
+  <div class="chips" id="chips">
+    <button data-r="ne_india">Assam &amp; NE India</button>
+    <button data-r="uk">UK</button>
+    <button data-r="all">All</button>
+    <button data-r="near">📍 Near me</button>
+  </div>
   <div class="legend">
-    <span style="--c:#1a9850">Good</span><span style="--c:#e0b100">Fair</span>
-    <span style="--c:#f46d43">Poor</span><span style="--c:#a50026">Very poor</span>
-    <span style="--c:transparent;">◯ black ring = sharp jolt (likely pothole)</span>
+    <span class="dot" style="--c:#1a9850">Good</span><span class="dot" style="--c:#e0b100">Fair</span>
+    <span class="dot" style="--c:#f46d43">Poor</span><span class="dot" style="--c:#a50026">Very poor</span>
+    <span class="ring">Sharp jolt</span><span>⚠ Drivers swerve here</span>
   </div>
   <div class="stats" id="stats">Loading…</div>
 </div>
+
+<dialog id="about">
+  <button class="linkbtn close" onclick="this.closest('dialog').close()">Close</button>
+  <h2>How this map works</h2>
+  <p>Drivers mount a phone in their vehicle and run the <a href="/record">recorder</a>. It uses the phone's motion sensors and GPS. There's no camera, so it works at night and in dust. Each dot is a ~40 m stretch of road.</p>
+  <h3>What's measured</h3>
+  <ul>
+    <li><b>Roughness:</b> how much the vehicle shakes up and down, adjusted for speed, since faster driving shakes more on the same road.</li>
+    <li><b>Sharp jolts</b> (black ring): a single hard bump against a calm background. Usually a pothole, sometimes a speed breaker or rail crossing.</li>
+    <li><b>Swerves</b> (⚠): a quick steer out and back on a straight road. One swerve could be a cow or an overtake. ⚠ appears only when drivers on several separate trips swerve at the same spot.</li>
+    <li><b>Crawling:</b> on very bad roads drivers slow to walking pace. The app counts the lurches as each wheel drops instead of measuring shaking. Crawling with no lurches is ignored, because it's probably traffic.</li>
+  </ul>
+  <h3>How accurate is it?</h3>
+  <ul>
+    <li>One trip is a hint; several trips on the same road are reliable. Click a dot to see how many trips it's based on.</li>
+    <li>Potholes that every driver steers around are only detectable through swerves.</li>
+    <li>Different vehicles feel the same road differently. An SUV smooths out bumps a hatchback feels.</li>
+    <li>Positions are GPS-accurate, typically to within 5–15 m.</li>
+    <li>UK and North East India are scored against different standards. "Poor" in Kent is a smaller problem than "poor" on a rural Assam road.</li>
+    <li>The thresholds are early estimates and are being tuned against labelled drives.</li>
+  </ul>
+  <h3>Privacy</h3>
+  <p>The first 300 m and roughly the last 400 m of every trip are never uploaded. This map shows only road stretches, never individual journeys.</p>
+</dialog>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   const COLORS = { good:"#1a9850", fair:"#e0b100", poor:"#f46d43", very_poor:"#a50026" };
-  const map = L.map("map", { zoomControl:false }).setView([26.2, 92.9], 7);
+  const REGION_VIEWS = { ne_india: [[22.0, 89.7], [29.5, 97.4]], uk: [[49.9, -8.2], [58.7, 1.8]] };
+  const VIEW_KEY = "rca.mapview";
+  const ls = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+               set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+
+  const map = L.map("map", { zoomControl:false });
   L.control.zoom({ position:"bottomright" }).addTo(map);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom:19, attribution:"&copy; OpenStreetMap contributors" }).addTo(map);
   const layer = L.layerGroup().addTo(map);
-  let fitted = false;
+  const hzIcon = L.divIcon({ className:"hz", html:"⚠", iconSize:[16,16], iconAnchor:[8,20] });
+  let cells = [], meMarker = null;
+
+  const saved = ls.get(VIEW_KEY);
+  let positioned = false;
+  if (saved && saved.c && saved.z) { map.setView(saved.c, saved.z); positioned = true; }
+  else map.fitBounds(REGION_VIEWS.ne_india);
+  map.on("moveend", () => { const c = map.getCenter(); ls.set(VIEW_KEY, { c:[c.lat, c.lng], z:map.getZoom() }); });
+
+  function setChip(r) { document.querySelectorAll("#chips button").forEach(b => b.classList.toggle("on", b.dataset.r === r)); }
+
+  function goRegion(r) {
+    setChip(r);
+    if (r === "near") return nearMe();
+    const pts = cells.filter(c => r === "all" || c.region === r).map(c => [c.lat, c.lon]);
+    if (pts.length) map.fitBounds(pts, { padding:[40,40], maxZoom:15 });
+    else if (REGION_VIEWS[r]) map.fitBounds(REGION_VIEWS[r]);
+  }
+
+  function nearMe() {
+    const stats = document.getElementById("stats");
+    if (!navigator.geolocation) { stats.textContent = "Location isn't available in this browser."; return; }
+    stats.textContent = "Finding you…";
+    navigator.geolocation.getCurrentPosition(p => {
+      const ll = [p.coords.latitude, p.coords.longitude];
+      map.setView(ll, 13);
+      if (meMarker) meMarker.remove();
+      meMarker = L.circleMarker(ll, { radius:7, color:"#fff", weight:2, fillColor:"#2b7bff", fillOpacity:1 }).addTo(map).bindTooltip("You");
+      render();
+    }, () => { stats.textContent = "Couldn't get your location. Pick a region instead."; setChip(null); },
+       { enableHighAccuracy:false, timeout:10000, maximumAge:600000 });
+  }
+
+  document.querySelectorAll("#chips button").forEach(b => b.onclick = () => goRegion(b.dataset.r));
+  document.getElementById("about-btn").onclick = () => document.getElementById("about").showModal();
+
+  function popup(c) {
+    const lines = [];
+    lines.push(c.condition ? `<b>${c.condition.replace("_"," ")}</b>` : "<b>No roughness reading</b>");
+    if (c.roughness !== null) lines.push(`Roughness ${c.roughness}${c.crawl ? ` (${c.crawl} at crawling speed)` : ""}`);
+    if (c.events) lines.push(`${c.events} sharp jolt${c.events > 1 ? "s" : ""}`);
+    if (c.swerve_trips) lines.push(`Swerves on ${c.swerve_trips} of ${c.trips} trips${c.hotspot ? " — likely hazard" : ""}`);
+    lines.push(`Based on ${c.trips} trip${c.trips === 1 ? "" : "s"}${c.trips < 3 ? " (indicative)" : ""}`);
+    if (c.last_seen) lines.push(`Last seen ${new Date(c.last_seen).toLocaleDateString()}`);
+    return lines.join("<br>");
+  }
+
+  function render() {
+    layer.clearLayers();
+    const b = map.getBounds();
+    const counts = { good:0, fair:0, poor:0, very_poor:0 }; let hot = 0, events = 0, inView = 0;
+    for (const c of cells) {
+      if (c.condition) L.circleMarker([c.lat, c.lon], {
+        radius:6, weight:c.events ? 2.5 : 0, color:"#000", fillColor:COLORS[c.condition], fillOpacity:.9,
+      }).bindPopup(popup(c)).addTo(layer);
+      if (c.hotspot) L.marker([c.lat, c.lon], { icon:hzIcon }).bindPopup(popup(c)).addTo(layer);
+      if (b.contains([c.lat, c.lon])) {
+        inView++; if (c.condition) counts[c.condition]++; events += c.events; hot += c.hotspot ? 1 : 0;
+      }
+    }
+    document.getElementById("stats").innerHTML = !cells.length
+      ? `No data yet. <a href="/record">Start recording →</a>`
+      : inView
+        ? `In view: ${inView} road stretches · ${counts.poor + counts.very_poor} poor or worse · ${events} jolts · ${hot} swerve hotspots`
+        : `No readings in this area yet. ${cells.length} stretches recorded elsewhere — pick a region above.`;
+  }
 
   async function load() {
-    let cells = [];
     try { cells = await (await fetch("/api/cells")).json(); } catch { return; }
-    layer.clearLayers();
-    const counts = { good:0, fair:0, poor:0, very_poor:0 }; let events = 0;
-    for (const c of cells) {
-      counts[c.condition]++; events += c.events;
-      L.circleMarker([c.lat, c.lon], {
-        radius: 6, weight: c.events ? 2.5 : 0, color: "#000", fillColor: COLORS[c.condition], fillOpacity: .9,
-      }).bindPopup(
-        `<b>${c.condition.replace("_"," ")}</b><br>Roughness ${c.roughness} m/s²<br>` +
-        `${c.n} readings · ${c.events} jolts<br>Last seen ${c.last_seen ? new Date(c.last_seen).toLocaleString() : "–"}`
-      ).addTo(layer);
+    if (!positioned) {
+      positioned = true;
+      // first visit: open on the region with the most data
+      const byRegion = {};
+      cells.forEach(c => byRegion[c.region] = (byRegion[c.region] || 0) + 1);
+      const best = Object.entries(byRegion).sort((a, b) => b[1] - a[1])[0];
+      if (best) goRegion(REGION_VIEWS[best[0]] ? best[0] : "all");
     }
-    if (cells.length && !fitted) { map.fitBounds(cells.map(c => [c.lat, c.lon]), { padding:[40,40], maxZoom:15 }); fitted = true; }
-    document.getElementById("stats").innerHTML = cells.length
-      ? `${cells.length} road cells · ${counts.poor + counts.very_poor} poor or worse · ${events} jolts`
-      : `No data yet. <a href="/record">Start recording →</a>`;
+    render();
   }
-  load(); setInterval(load, 60000);
+  map.on("moveend", () => cells.length && render());
+  load(); setInterval(load, 120000);
 </script>
 </body>
 </html>
