@@ -1,5 +1,5 @@
 // Caches the recorder shell so it opens with no signal. API calls always go to the network.
-const CACHE = "rca-v2";
+const CACHE = "rca-v3";
 const SHELL = ["/record", "/static/signals.js", "/static/recorder.js", "/static/manifest.json", "/static/icon.svg"];
 
 self.addEventListener("install", (e) => {

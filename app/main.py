@@ -19,6 +19,17 @@ CELL_PRECISION = 8
 VERSION_CHECK_S = 20
 
 app = FastAPI(title="Road Condition Assessment")
+
+
+@app.middleware("http")
+async def revalidate_pages(request, call_next):
+    # Make browsers check for a new version on every load (cheap: ETag/304),
+    # so phones never keep running an old recorder or map.
+    resp = await call_next(request)
+    path = request.url.path
+    if path in ("/", "/record", "/sw.js") or path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
 store = make_store(os.environ.get("STORE", "firestore"))
 _cache = {"checked": 0.0, "version": None, "data": None}
 
@@ -160,7 +171,7 @@ def record():
 @app.get("/sw.js")
 def sw():
     return FileResponse(STATIC / "sw.js", media_type="application/javascript",
-                        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+                        headers={"Service-Worker-Allowed": "/"})
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
