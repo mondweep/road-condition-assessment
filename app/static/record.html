@@ -45,6 +45,10 @@
   #onb-next { background:var(--ok); color:#06210f; font-weight:650; }
   #onb-back, #onb-skip { background:transparent; color:var(--mut); }
   #onb-dots { color:var(--mut); letter-spacing:2px; font-size:12px; }
+  .signin { border:1px solid #2f6f4c; }
+  .signin-title { font-size:18px; font-weight:650; margin-bottom:6px; }
+  .signin-text { color:#c8d0da; font-size:15px; margin:0 0 12px; }
+  #gbtn { min-height:44px; margin-bottom:8px; }
   .sw { display:inline-block; width:12px; height:12px; border-radius:50%; vertical-align:-1px; margin-right:4px; }
 </style>
 </head>
@@ -64,6 +68,13 @@
 <button id="go">Start recording</button>
 <p id="msg"></p>
 
+<div class="card signin" id="signin" hidden>
+  <div class="signin-title" id="signin-title">Keep recording for free</div>
+  <p class="signin-text" id="signin-text"></p>
+  <div id="gbtn"></div>
+  <p class="note" id="signin-privacy">We keep your name and email only to verify contributors and to contact you about this project. They are never shown on the map. To have them deleted, email <a href="mailto:mondweep@dxsure.uk" style="color:inherit">mondweep@dxsure.uk</a>.</p>
+</div>
+
 <div class="card">
   <div class="grid">
     <div class="stat"><div class="v" id="spd">–</div><div class="l">km/h</div></div>
@@ -73,6 +84,7 @@
 </div>
 
 <div class="card">
+  <div class="row">Account <b id="acct">–</b></div>
   <div class="row">Privacy <b id="trim">–</b></div>
   <div class="row">Swerves detected this trip <b id="sw">0</b></div>
   <div class="row">GPS accuracy <b id="gps">–</b></div>
@@ -82,7 +94,7 @@
   <div class="row">Last upload <b id="lu">–</b></div>
 </div>
 
-<p class="note">Your phone records motion and location only — no camera, no microphone. The first 300 m of every trip and roughly the last 400 m are never uploaded, so your start and end points stay private. The public map only shows road stretches, never individual trips. No sign-up: your phone gets a random ID the first time you open this page. Uploads carry that ID and the vehicle type you enter; no name, email or phone number.</p>
+<p class="note">Your phone records motion and location only — no camera, no microphone. The first 300 m of every trip and roughly the last 400 m are never uploaded, so your start and end points stay private. The public map only shows road stretches, never individual trips. Your phone gets a random ID the first time you open this page. Uploads carry that ID and the vehicle type you enter. If you sign in, your Google name and email are linked to that ID, never shown publicly.</p>
 
 <div id="onb" hidden>
   <div class="sheet" role="dialog" aria-label="How to use Road Recorder">
@@ -116,6 +128,7 @@
         <li><b>Don't touch the phone while moving.</b> Leave this screen open: if it locks or you switch apps, recording pauses.</li>
         <li>Drive normally, including slowly on bad roads. Crawling counts too.</li>
         <li>When you arrive, stop and press <b>Stop</b>. Readings upload whenever there's signal, so dead zones are fine.</li>
+        <li>The first <b>15 minutes are free with no sign-up</b>. After that, sign in with Google to keep going. It's still free.</li>
       </ul>
     </section>
     <section class="step" hidden>

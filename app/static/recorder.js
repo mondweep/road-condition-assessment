@@ -22,6 +22,10 @@
   $("veh").value = store.get(LS.veh, "");
   $("veh").onchange = () => store.set(LS.veh, $("veh").value.trim());
 
+  let cfg = FALLBACK_CFG;
+  try { cfg = JSON.parse(store.get(LS.cfg)) || FALLBACK_CFG; } catch {}
+  const cfgReady = fetch("/api/config").then((r) => r.json()).then((c) => { cfg = c; store.set(LS.cfg, JSON.stringify(c)); }).catch(() => {});
+
   // Access: every phone registers itself and gets its own upload token.
   // An admin/invite key (?key=...) still works and skips registration.
   let deviceId = store.get(LS.dev);
@@ -35,18 +39,79 @@
     }
     if (token && deviceId) return true;
     if (!navigator.onLine) return false;
-    registering = registering || fetch("/api/register", { method: "POST" })
+    registering = registering || cfgReady.then(botToken)
+      .then((captcha) => fetch("/api/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ captcha }) }))
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((d) => { deviceId = d.device_id; token = d.token; store.set(LS.dev, deviceId); store.set(LS.tok, token); return true; })
+      .then((d) => { deviceId = d.device_id; token = d.token; store.set(LS.dev, deviceId); store.set(LS.tok, token); showStatus(d); return true; })
       .catch(() => false)
       .finally(() => { registering = null; });
     return registering;
   }
-  ensureDevice();
+  ensureDevice().then((ok) => ok && refreshStatus());
 
-  let cfg = FALLBACK_CFG;
-  try { cfg = JSON.parse(store.get(LS.cfg)) || FALLBACK_CFG; } catch {}
-  fetch("/api/config").then((r) => r.json()).then((c) => { cfg = c; store.set(LS.cfg, JSON.stringify(c)); }).catch(() => {});
+  // --- bot check, free trial and Google sign-in --------------------------
+  function loadScript(src) {
+    return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.async = true; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+  }
+  async function botToken() {
+    const k = cfg.recaptcha_site_key;
+    if (!k) return "";
+    try {
+      if (!window.grecaptcha) await loadScript("https://www.google.com/recaptcha/enterprise.js?render=" + encodeURIComponent(k));
+      await new Promise((r) => grecaptcha.enterprise.ready(r));
+      return await grecaptcha.enterprise.execute(k, { action: "register" });
+    } catch { return ""; }
+  }
+  let signedIn = null, trialOver = false;
+  function showStatus(st) {
+    if (!st || adminKey()) { $("signin").hidden = true; $("acct").textContent = adminKey() ? "invite link" : "–"; return; }
+    signedIn = st.signed_in || null;
+    if (signedIn) {
+      trialOver = false;
+      $("acct").textContent = "signed in as " + signedIn;
+      $("signin").hidden = true;
+      return;
+    }
+    const left = st.trial_left_s ?? 0;
+    trialOver = left <= 0;
+    $("acct").textContent = trialOver ? "free trial used" : `free trial: ${Math.ceil(left / 60)} min left`;
+    $("signin-title").textContent = trialOver ? "Your free 15 minutes are used up" : "Keep recording for free";
+    $("signin-text").textContent = trialOver
+      ? "Keep driving: your readings are saved on this phone. Once you've stopped safely, sign in with Google to upload them and carry on — it's free."
+      : `You have ${Math.ceil(left / 60)} minutes of free recording. Sign in with Google before you set off (or once you've stopped) to remove the limit — it stays free.`;
+    $("signin").hidden = false;
+    renderGoogleButton();
+  }
+  async function refreshStatus() {
+    if (adminKey() || !token) return showStatus(null);
+    try {
+      const r = await fetch("/api/me", { headers: { "X-Device-Id": deviceId, "X-Device-Token": token } });
+      if (r.ok) showStatus(await r.json());
+    } catch {}
+  }
+  let gisReady = null, gbtnOnce = null;
+  function renderGoogleButton() { return (gbtnOnce = gbtnOnce || renderGoogleButtonOnce()); }
+  async function renderGoogleButtonOnce() {
+    await cfgReady;
+    const el = $("gbtn");
+    if (!cfg.google_client_id) { el.textContent = "Sign-in is being set up — please check back soon."; return; }
+    try {
+      gisReady = gisReady || loadScript("https://accounts.google.com/gsi/client");
+      await gisReady;
+      google.accounts.id.initialize({ client_id: cfg.google_client_id, callback: onGoogle, ux_mode: "popup" });
+      google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", text: "continue_with", shape: "pill" });
+    } catch { gbtnOnce = null; el.textContent = "Couldn't load Google sign-in. Check your connection and reload."; }
+  }
+  async function onGoogle(resp) {
+    if (!(await ensureDevice())) return msg("You're offline — sign in again when you have signal.");
+    try {
+      const r = await fetch("/api/signin", { method: "POST", headers: { "Content-Type": "application/json", "X-Device-Id": deviceId, "X-Device-Token": token }, body: JSON.stringify({ credential: resp.credential }) });
+      const j = await r.json();
+      if (!r.ok) return msg(j.detail === "this account has been blocked" ? "This account can't upload. Contact the project team if this is a mistake." : "Sign-in didn't work. Please try again.");
+      showStatus(j); msg(""); flush();
+    } catch { msg("Sign-in didn't work. Check your connection and try again."); }
+  }
+
 
   let queue = [];
   try { queue = JSON.parse(store.get(LS.q, "[]")) || []; } catch { queue = []; }
@@ -155,8 +220,14 @@
   }
 
   async function flush() {
-    if (!queue.length || !navigator.onLine) return;
+    if (!queue.length || !navigator.onLine || flushing) return;
     if (!(await ensureDevice())) return;
+    if (trialOver && !signedIn && !adminKey()) return;   // wait for sign-in; readings stay on the phone
+    flushing = true;
+    try { await flushInner(); } finally { flushing = false; }
+  }
+  let flushing = false;
+  async function flushInner() {
     const key = adminKey();
     const auth = key ? { "X-Ingest-Key": key } : { "X-Device-Token": token };
     while (queue.length) {
@@ -177,8 +248,12 @@
         }
         if (r.status === 403) { msg("Uploads from this phone have been paused. Contact the project team if this is a mistake."); return; }
         if (r.status === 429) return;          // over the limit: keep readings, try again later
+        if (r.status === 402) { showStatus({ signed_in: null, trial_left_s: 0 }); return; }
         if (!r.ok) throw new Error(r.status);
-        queue = queue.slice(same.length); uploaded += same.length;
+        const res = await r.json();
+        const sent = same.length - (res.unsent || 0);
+        queue = queue.slice(sent); uploaded += sent;
+        if (!key) showStatus(res);
         saveQueue();
         $("up").textContent = uploaded;
         $("lu").textContent = new Date().toLocaleTimeString();

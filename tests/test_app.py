@@ -136,7 +136,8 @@ def test_token_is_bound_to_its_device():
 def test_implausible_windows_dropped():
     dev = register()
     r = device_post(dev, [now_win(speed=80), win(t=time.time() * 1000 + 3600e3), win(t=1.0e12), now_win()])
-    assert r.json() == {"accepted": 1, "skipped": {"implausible": 3}}
+    j = r.json()
+    assert j["accepted"] == 1 and j["skipped"] == {"implausible": 3}
 
 
 def test_block_and_unblock():
@@ -166,3 +167,67 @@ def test_registration_rate_limit():
     codes = [client.post("/api/register").status_code for _ in range(access.REGISTRATIONS_PER_HOUR_PER_IP + 1)]
     assert codes[-1] == 429 and set(codes[:-1]) == {200}
     limiter.regs.clear()
+
+
+# --- free trial, bot check and Google sign-in --------------------------------
+from app import identity, main  # noqa: E402
+
+
+def auth(dev):
+    return {"X-Device-Id": dev["device_id"], "X-Device-Token": dev["token"]}
+
+
+def test_trial_runs_out_then_sign_in_unlocks(monkeypatch):
+    monkeypatch.setattr(main, "TRIAL_SECONDS", 5)
+    dev = register()
+    assert client.get("/api/me", headers=auth(dev)).json() == {"signed_in": None, "trial_left_s": 5}
+    r = device_post(dev, [now_win() for _ in range(3)]).json()
+    assert r["trial_left_s"] == 2 and r["unsent"] == 0
+    r = device_post(dev, [now_win() for _ in range(4)]).json()   # only 2 seconds left
+    assert r["accepted"] == 2 and r["unsent"] == 2 and r["trial_left_s"] == 0
+    rr = device_post(dev, [now_win()])
+    assert rr.status_code == 402 and rr.json()["detail"] == "trial_over"
+
+    monkeypatch.setattr(identity, "verify_google", lambda cred: {"email": "driver@example.com", "name": "A Driver", "sub": "123"})
+    r = client.post("/api/signin", headers=auth(dev), json={"credential": "x"})
+    assert r.status_code == 200 and r.json()["signed_in"] == "driver@example.com"
+    r = device_post(dev, [now_win() for _ in range(10)]).json()
+    assert r["accepted"] == 10 and r["trial_left_s"] is None
+    assert client.get("/api/me", headers=auth(dev)).json()["signed_in"] == "driver@example.com"
+    users = client.get("/api/admin/devices", headers=H).json()["users"]
+    assert any(u["email"] == "driver@example.com" and dev["device_id"] in u["devices"] for u in users)
+
+    # blocking the account stops every phone linked to it
+    client.post("/api/admin/block", headers=H, json={"email": "Driver@Example.com"})
+    assert device_post(dev, [now_win()]).status_code == 403
+    assert client.post("/api/signin", headers=auth(dev), json={"credential": "x"}).status_code == 403
+    client.post("/api/admin/block", headers=H, json={"email": "driver@example.com", "blocked": False})
+
+
+def test_signin_needs_valid_device_and_token(monkeypatch):
+    def bad(cred):
+        raise ValueError("bad token")
+    monkeypatch.setattr(identity, "verify_google", bad)
+    dev = register()
+    assert client.post("/api/signin", headers=auth(dev), json={"credential": "x"}).status_code == 401
+    assert client.post("/api/signin", headers={"X-Device-Id": dev["device_id"], "X-Device-Token": "no"},
+                       json={"credential": "x"}).status_code == 401
+
+
+def test_bot_check_on_register(monkeypatch):
+    seen = {}
+    def fake(token, action="register"):
+        seen["token"] = token
+        return token == "human"
+    monkeypatch.setattr(identity, "human_ok", fake)
+    limiter.regs.clear()
+    assert client.post("/api/register", json={"captcha": "bot"}).status_code == 403
+    assert client.post("/api/register", json={"captcha": "human"}).status_code == 200
+    assert seen["token"] == "human"
+    limiter.regs.clear()
+
+
+def test_config_exposes_public_keys_only():
+    cfg = client.get("/api/config").json()
+    assert {"trial_seconds", "recaptcha_site_key", "google_client_id"} <= set(cfg)
+    assert "INGEST_KEY" not in str(cfg) and "test-key" not in str(cfg)

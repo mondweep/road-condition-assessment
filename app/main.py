@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import access, geohash
+from . import access, geohash, identity
 from .scoring import classify, is_hotspot, public_config, region_of, score_window
 from .store import make_store
 
@@ -34,6 +34,7 @@ blocklist = access.Blocklist(store)
 MAX_SPEED_MS = 55.0             # ~200 km/h: faster is a GPS glitch or fake data
 MAX_FUTURE_MS = 5 * 60 * 1000
 MAX_AGE_MS = 14 * 24 * 3600 * 1000
+TRIAL_SECONDS = int(os.environ.get("TRIAL_SECONDS", 15 * 60))   # free recording before sign-in
 _cache = {"checked": 0.0, "version": None, "data": None}
 
 
@@ -77,13 +78,55 @@ def _client_ip(request: Request) -> str:
     return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
 
 
+class RegisterReq(BaseModel):
+    captcha: str = Field(default="", max_length=4000)
+
+
 @app.post("/api/register")
-def register(request: Request):
-    """Gives a phone its own device id and upload token. No sign-up needed."""
+def register(request: Request, req: Optional[RegisterReq] = None):
+    """Gives a phone its own device id and upload token, after a bot check."""
     if not limiter.allow_register(_client_ip(request)):
         raise HTTPException(429, "too many new devices from this network; try again later")
+    if not identity.human_ok((req or RegisterReq()).captcha, "register"):
+        raise HTTPException(403, "bot check failed; reload the page and try again")
     device_id = access.new_device_id()
-    return {"device_id": device_id, "token": access.token_for(device_id)}
+    return {"device_id": device_id, "token": access.token_for(device_id), "trial_left_s": TRIAL_SECONDS}
+
+
+def _device(x_device_id: str, x_device_token: str) -> str:
+    if not access.token_ok(x_device_id, x_device_token):
+        raise HTTPException(401, "unknown device; register again")
+    return x_device_id
+
+
+def _status(device_id: str, dev: Optional[dict]) -> dict:
+    dev = dev or {}
+    user = dev.get("user")
+    return {"signed_in": user, "trial_left_s": None if user else max(0, TRIAL_SECONDS - int(dev.get("trial_used", 0)))}
+
+
+@app.get("/api/me")
+def me(x_device_id: str = Header(default=""), x_device_token: str = Header(default="")):
+    d = _device(x_device_id, x_device_token)
+    return _status(d, store.get_device(d))
+
+
+class SignInReq(BaseModel):
+    credential: str = Field(max_length=8000)
+
+
+@app.post("/api/signin")
+def signin(req: SignInReq, x_device_id: str = Header(default=""), x_device_token: str = Header(default="")):
+    """Links this phone to a verified Google account; removes the trial limit."""
+    d = _device(x_device_id, x_device_token)
+    try:
+        user = identity.verify_google(req.credential)
+    except ValueError as e:
+        raise HTTPException(401, f"sign-in failed: {e}")
+    if blocklist.is_blocked("user:" + user["email"]):
+        raise HTTPException(403, "this account has been blocked")
+    store.link_user(d, user)
+    return {**_status(d, {"user": user["email"]}), "name": user["name"]}
 
 
 @app.post("/api/ingest")
@@ -93,15 +136,29 @@ def ingest(batch: Batch, x_ingest_key: str = Header(default=""), x_device_token:
         raise HTTPException(401, "unknown device; register again")
     if blocklist.is_blocked(batch.device_id):
         raise HTTPException(403, "this device has been blocked")
+    windows, status = batch.windows, {"signed_in": None, "trial_left_s": None}
     if not admin:
-        why = limiter.allow_upload(batch.device_id, len(batch.windows))
+        dev = store.get_device(batch.device_id) or {}
+        status = _status(batch.device_id, dev)
+        if status["signed_in"]:
+            if blocklist.is_blocked("user:" + status["signed_in"]):
+                raise HTTPException(403, "this account has been blocked")
+        else:
+            left = status["trial_left_s"]
+            if left <= 0:
+                raise HTTPException(402, "trial_over")
+            windows = windows[:left]
+        why = limiter.allow_upload(batch.device_id, len(windows))
         if why:
             raise HTTPException(429, why)
+        if not status["signed_in"]:
+            store.add_trial(batch.device_id, len(windows))
+            status["trial_left_s"] -= len(windows)
     now_ms = time.time() * 1000
 
     trip = f"{batch.device_id}:{batch.trip_id}"
     stored, cell_updates, skipped = [], {}, {}
-    for w in batch.windows:
+    for w in windows:
         if w.t > now_ms + MAX_FUTURE_MS or (not admin and w.t < now_ms - MAX_AGE_MS) or (w.speed or 0) > MAX_SPEED_MS:
             skipped["implausible"] = skipped.get("implausible", 0) + 1
             continue
@@ -138,7 +195,10 @@ def ingest(batch: Batch, x_ingest_key: str = Header(default=""), x_device_token:
     if stored:
         store.write(stored, cell_updates)
         _cache["data"] = None
-    return {"accepted": len(stored), "skipped": skipped}
+    out = {"accepted": len(stored), "skipped": skipped}
+    if not admin:
+        out.update(status, unsent=len(batch.windows) - len(windows))
+    return out
 
 
 def _build_cells():
@@ -165,7 +225,8 @@ def _build_cells():
 
 
 class BlockReq(BaseModel):
-    device_id: str = Field(max_length=64)
+    device_id: str = Field(default="", max_length=64)
+    email: str = Field(default="", max_length=254)
     blocked: bool = True
     note: str = Field(default="", max_length=200)
 
@@ -174,9 +235,12 @@ class BlockReq(BaseModel):
 def admin_block(req: BlockReq, x_ingest_key: str = Header(default="")):
     if not access.admin_ok(x_ingest_key):
         raise HTTPException(401, "admin key required")
-    store.set_blocked(req.device_id, req.blocked, req.note)
+    key = ("user:" + req.email.lower()) if req.email else req.device_id
+    if not key:
+        raise HTTPException(400, "give a device_id or an email")
+    store.set_blocked(key, req.blocked, req.note)
     blocklist.refresh()
-    return {"device_id": req.device_id, "blocked": req.blocked}
+    return {"blocked_id": key, "blocked": req.blocked}
 
 
 @app.get("/api/admin/devices")
@@ -184,7 +248,7 @@ def admin_devices(x_ingest_key: str = Header(default="")):
     if not access.admin_ok(x_ingest_key):
         raise HTTPException(401, "admin key required")
     return {"devices": store.device_summary() if hasattr(store, "device_summary") else [],
-            "blocked": sorted(store.blocked())}
+            "users": store.list_users(), "blocked": sorted(store.blocked())}
 
 
 @app.get("/api/cells")
@@ -201,7 +265,9 @@ def cells():
 
 @app.get("/api/config")
 def config():
-    return JSONResponse(public_config(), headers={"Cache-Control": "public, max-age=3600"})
+    cfg = {**public_config(), "trial_seconds": TRIAL_SECONDS,
+           "recaptcha_site_key": identity.RECAPTCHA_SITE_KEY, "google_client_id": identity.GOOGLE_CLIENT_ID}
+    return JSONResponse(cfg, headers={"Cache-Control": "public, max-age=300"})
 
 
 @app.get("/health")  # /healthz is reserved by Cloud Run's frontend
