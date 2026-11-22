@@ -3,7 +3,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const S = window.Signals;
-  const LS = { key: "rca.key", veh: "rca.veh", dev: "rca.device", q: "rca.queue", onb: "rca.onboarded", cfg: "rca.config" };
+  const LS = { key: "rca.key", tok: "rca.token", veh: "rca.veh", dev: "rca.device", q: "rca.queue", onb: "rca.onboarded", cfg: "rca.config" };
   const MAX_QUEUE = 25000;          // ~7 h of driving
   const FLUSH_MS = 20000;
   const BATCH = 500;
@@ -19,13 +19,30 @@
   // --- setup -----------------------------------------------------------
   const params = new URLSearchParams(location.search);
   if (params.get("key")) { store.set(LS.key, params.get("key")); history.replaceState(null, "", "/record"); }
-  $("key").value = store.get(LS.key, "");
   $("veh").value = store.get(LS.veh, "");
-  $("key").onchange = () => store.set(LS.key, $("key").value.trim());
   $("veh").onchange = () => store.set(LS.veh, $("veh").value.trim());
-  if (store.get(LS.key, "")) $("keyrow").style.display = "none";
+
+  // Access: every phone registers itself and gets its own upload token.
+  // An admin/invite key (?key=...) still works and skips registration.
   let deviceId = store.get(LS.dev);
-  if (!deviceId) { deviceId = "d-" + Math.random().toString(36).slice(2, 10); store.set(LS.dev, deviceId); }
+  let token = store.get(LS.tok, "");
+  const adminKey = () => store.get(LS.key, "");
+  let registering = null;
+  async function ensureDevice() {
+    if (adminKey()) {
+      if (!deviceId) { deviceId = "d-" + Math.random().toString(36).slice(2, 10); store.set(LS.dev, deviceId); }
+      return true;
+    }
+    if (token && deviceId) return true;
+    if (!navigator.onLine) return false;
+    registering = registering || fetch("/api/register", { method: "POST" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((d) => { deviceId = d.device_id; token = d.token; store.set(LS.dev, deviceId); store.set(LS.tok, token); return true; })
+      .catch(() => false)
+      .finally(() => { registering = null; });
+    return registering;
+  }
+  ensureDevice();
 
   let cfg = FALLBACK_CFG;
   try { cfg = JSON.parse(store.get(LS.cfg)) || FALLBACK_CFG; } catch {}
@@ -138,8 +155,10 @@
   }
 
   async function flush() {
-    const key = store.get(LS.key, "");
-    if (!key || !queue.length || !navigator.onLine) return;
+    if (!queue.length || !navigator.onLine) return;
+    if (!(await ensureDevice())) return;
+    const key = adminKey();
+    const auth = key ? { "X-Ingest-Key": key } : { "X-Device-Token": token };
     while (queue.length) {
       const chunk = queue.slice(0, BATCH);
       const trip = chunk[0]._trip || tripId || "offline";
@@ -147,11 +166,17 @@
       try {
         const r = await fetch("/api/ingest", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-Ingest-Key": key },
+          headers: { "Content-Type": "application/json", ...auth },
           body: JSON.stringify({ device_id: deviceId, trip_id: trip, vehicle: store.get(LS.veh, "") || null,
                                  windows: same.map(({ _trip, ...w }) => w) }),
         });
-        if (r.status === 401) { msg("Upload rejected: the ingest key is wrong — check it below."); $("keyrow").style.display = ""; return; }
+        if (r.status === 401) {
+          if (key) { msg("Upload rejected: the invite key in your link is no longer valid."); store.set(LS.key, ""); }
+          token = ""; store.set(LS.tok, "");   // re-register on the next attempt
+          return;
+        }
+        if (r.status === 403) { msg("Uploads from this phone have been paused. Contact the project team if this is a mistake."); return; }
+        if (r.status === 429) return;          // over the limit: keep readings, try again later
         if (!r.ok) throw new Error(r.status);
         queue = queue.slice(same.length); uploaded += same.length;
         saveQueue();
@@ -172,7 +197,7 @@
   window.addEventListener("online", flush);
 
   async function start() {
-    if (!store.get(LS.key, "")) { msg("Enter the ingest key first."); $("keyrow").style.display = ""; $("setup").hidden = false; return; }
+    ensureDevice();   // fine if offline: readings are kept and uploaded once registered
     // iOS requires an explicit grant; some other browsers expose the same call.
     // Don't block on its answer: check below that motion data actually arrives.
     if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {

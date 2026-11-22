@@ -19,6 +19,7 @@ class MemoryStore:
         self.windows = []
         self.cells = defaultdict(dict)
         self._version = 0
+        self._blocked = set()
 
     def write(self, windows, cell_updates):
         self.windows.extend(windows)
@@ -35,6 +36,12 @@ class MemoryStore:
 
     def version(self):
         return self._version
+
+    def blocked(self):
+        return set(self._blocked)
+
+    def set_blocked(self, device_id, blocked, note=""):
+        (self._blocked.add if blocked else self._blocked.discard)(device_id)
 
     def list_cells(self, limit=50000):
         return [{"id": k, **v} for k, v in list(self.cells.items())[:limit]]
@@ -67,6 +74,26 @@ class FirestoreStore:
                 batch.set(ref, data, merge=(kind == "merge"))
             batch.commit()
         self._meta.set({"version": fs.Increment(1)}, merge=True)
+
+    def blocked(self):
+        return {d.id for d in self.db.collection("blocked_devices").stream()}
+
+    def set_blocked(self, device_id, blocked, note=""):
+        ref = self.db.collection("blocked_devices").document(device_id)
+        if blocked:
+            ref.set({"note": note, "at": self._fs.SERVER_TIMESTAMP})
+        else:
+            ref.delete()
+
+    def device_summary(self, limit=200):
+        """Recent uploaders: windows per device from the last 5,000 stored windows."""
+        q = self.db.collection("windows").order_by("t", direction=self._fs.Query.DESCENDING).limit(5000)
+        out = {}
+        for d in q.select(["device_id", "vehicle", "t"]).stream():
+            x = d.to_dict(); k = x.get("device_id")
+            o = out.setdefault(k, {"device_id": k, "vehicle": x.get("vehicle"), "windows": 0, "last_t": x.get("t")})
+            o["windows"] += 1
+        return sorted(out.values(), key=lambda o: -(o["last_t"] or 0))[:limit]
 
     def version(self):
         doc = self._meta.get()

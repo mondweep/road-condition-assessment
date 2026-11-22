@@ -12,8 +12,12 @@ The app is vibration- and GPS-based. It never uses the camera.
    - Detects **swerves** on the phone (`static/signals.js`). A swerve is a quick out-and-back steer on a straight road, ending on the same heading, with a small total swing. Bends and S-bends are rejected.
    - **Privacy trimming:** nothing is uploaded until the phone is 300 m in a straight line from the trip start. The last ~400 m of driving are held back and discarded when the trip stops.
    - Buffers windows on the phone (up to ~7 h) and uploads every 20 s when there's signal. Keeps the screen awake.
-2. **Ingest API (`POST /api/ingest`)**: protected by the `X-Ingest-Key` header. Scores each window and aggregates it into geohash-8 cells (~38 × 19 m) in Firestore.
-3. **Map (`/`)**: public Leaflet/OpenStreetMap view.
+2. **Access (no sign-up):** the first time a phone opens `/record`, it calls `POST /api/register` and gets its own device ID and upload token. The token is an HMAC of the ID, so the server stores nothing.
+   - Safeguards: at most 20 uploads/min and 4,500 windows/hour per device, and 10 new devices/hour per IP address.
+   - Implausible readings are dropped: timestamps in the future or older than 14 days, and speeds over 200 km/h.
+   - The shared `INGEST_KEY` still works (`?key=` link) and is the **admin key**.
+3. **Ingest API (`POST /api/ingest`)**: accepts an `X-Device-Token` header or the admin `X-Ingest-Key` header. Scores each window and aggregates it into geohash-8 cells (~38 × 19 m) in Firestore.
+4. **Map (`/`)**: public Leaflet/OpenStreetMap view.
    - Region buttons (Assam & NE India / UK / All).
    - "Near me" asks for location only when tapped. The last view is remembered.
    - "How this works" explains the method and its limits.
@@ -50,6 +54,16 @@ All thresholds are **starting heuristics**. Tune them on labelled drives by noti
 - Vehicle suspension changes readings; the `vehicle` field is stored for later per-vehicle calibration.
 - Browsers pause sensors when the screen locks.
 
+## Admin
+
+```bash
+# recent uploaders and the blocklist
+curl -H "X-Ingest-Key: $KEY" $URL/api/admin/devices
+# block (or unblock with "blocked": false) a phone
+curl -X POST -H "X-Ingest-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"device_id":"p-XXXX","note":"spam"}' $URL/api/admin/block
+```
+
 ## Run locally
 
 ```bash
@@ -63,7 +77,7 @@ STORE=memory INGEST_KEY=dev uvicorn app.main:app --reload
 
 ```bash
 gcloud run deploy road-condition --source . --region asia-south1 \
-  --allow-unauthenticated --set-env-vars INGEST_KEY=<secret>
+  --allow-unauthenticated --set-env-vars INGEST_KEY=<admin secret>,TOKEN_SECRET=<random secret>
 ```
 
 The Cloud Run service account needs `roles/datastore.user` on the project.

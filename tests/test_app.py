@@ -96,3 +96,73 @@ def test_ingest_cells_and_hotspot():
 def test_config():
     cfg = client.get("/api/config").json()
     assert "uk" in cfg["regions"] and cfg["regions"]["uk"]["thresholds"][0] < cfg["regions"]["ne_india"]["thresholds"][0]
+
+
+# --- open contribution with safeguards -------------------------------------
+import time  # noqa: E402
+
+from app import access  # noqa: E402
+from app.main import limiter  # noqa: E402
+
+
+def now_win(**kw):
+    return win(t=time.time() * 1000, **kw)
+
+
+def register():
+    r = client.post("/api/register")
+    assert r.status_code == 200
+    return r.json()
+
+
+def device_post(dev, windows, token=None):
+    return client.post("/api/ingest", headers={"X-Device-Token": dev["token"] if token is None else token},
+                       json={"device_id": dev["device_id"], "trip_id": "t-open", "windows": windows})
+
+
+def test_register_and_upload_without_key():
+    dev = register()
+    assert dev["device_id"].startswith("p-") and len(dev["token"]) == 32
+    r = device_post(dev, [now_win()])
+    assert r.status_code == 200 and r.json()["accepted"] == 1
+
+
+def test_token_is_bound_to_its_device():
+    a, b = register(), register()
+    assert device_post(a, [now_win()], token=b["token"]).status_code == 401
+    assert device_post(a, [now_win()], token="").status_code == 401
+
+
+def test_implausible_windows_dropped():
+    dev = register()
+    r = device_post(dev, [now_win(speed=80), win(t=time.time() * 1000 + 3600e3), win(t=1.0e12), now_win()])
+    assert r.json() == {"accepted": 1, "skipped": {"implausible": 3}}
+
+
+def test_block_and_unblock():
+    dev = register()
+    assert client.post("/api/admin/block", json={"device_id": dev["device_id"]}).status_code == 401
+    assert client.post("/api/admin/block", headers=H, json={"device_id": dev["device_id"], "note": "spam"}).status_code == 200
+    assert device_post(dev, [now_win()]).status_code == 403
+    client.post("/api/admin/block", headers=H, json={"device_id": dev["device_id"], "blocked": False})
+    assert device_post(dev, [now_win()]).status_code == 200
+    assert dev["device_id"] not in client.get("/api/admin/devices", headers=H).json()["blocked"]
+
+
+def test_upload_rate_limits():
+    dev = register()
+    for _ in range(access.REQUESTS_PER_MINUTE):
+        assert device_post(dev, [now_win()]).status_code == 200
+    assert device_post(dev, [now_win()]).status_code == 429
+    l = access.Limiter()
+    assert l.allow_upload("x", 2000, now=1000) == ""
+    assert l.allow_upload("x", 2000, now=1001) == ""
+    assert l.allow_upload("x", 2000, now=1002) == "too much data this hour"
+    assert l.allow_upload("x", 2000, now=1000 + 3601) == ""
+
+
+def test_registration_rate_limit():
+    limiter.regs.clear()
+    codes = [client.post("/api/register").status_code for _ in range(access.REGISTRATIONS_PER_HOUR_PER_IP + 1)]
+    assert codes[-1] == 429 and set(codes[:-1]) == {200}
+    limiter.regs.clear()

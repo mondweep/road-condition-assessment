@@ -1,20 +1,18 @@
-import hmac
 import os
 import time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import geohash
+from . import access, geohash
 from .scoring import classify, is_hotspot, public_config, region_of, score_window
 from .store import make_store
 
 STATIC = Path(__file__).parent / "static"
-INGEST_KEY = os.environ.get("INGEST_KEY", "")
 CELL_PRECISION = 8
 VERSION_CHECK_S = 20
 
@@ -31,6 +29,11 @@ async def revalidate_pages(request, call_next):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
 store = make_store(os.environ.get("STORE", "firestore"))
+limiter = access.Limiter()
+blocklist = access.Blocklist(store)
+MAX_SPEED_MS = 55.0             # ~200 km/h: faster is a GPS glitch or fake data
+MAX_FUTURE_MS = 5 * 60 * 1000
+MAX_AGE_MS = 14 * 24 * 3600 * 1000
 _cache = {"checked": 0.0, "version": None, "data": None}
 
 
@@ -69,14 +72,39 @@ def _cell_inc(cell_updates, cell):
     })
 
 
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+@app.post("/api/register")
+def register(request: Request):
+    """Gives a phone its own device id and upload token. No sign-up needed."""
+    if not limiter.allow_register(_client_ip(request)):
+        raise HTTPException(429, "too many new devices from this network; try again later")
+    device_id = access.new_device_id()
+    return {"device_id": device_id, "token": access.token_for(device_id)}
+
+
 @app.post("/api/ingest")
-def ingest(batch: Batch, x_ingest_key: str = Header(default="")):
-    if not INGEST_KEY or not hmac.compare_digest(x_ingest_key, INGEST_KEY):
-        raise HTTPException(401, "bad ingest key")
+def ingest(batch: Batch, x_ingest_key: str = Header(default=""), x_device_token: str = Header(default="")):
+    admin = access.admin_ok(x_ingest_key)
+    if not admin and not access.token_ok(batch.device_id, x_device_token):
+        raise HTTPException(401, "unknown device; register again")
+    if blocklist.is_blocked(batch.device_id):
+        raise HTTPException(403, "this device has been blocked")
+    if not admin:
+        why = limiter.allow_upload(batch.device_id, len(batch.windows))
+        if why:
+            raise HTTPException(429, why)
+    now_ms = time.time() * 1000
 
     trip = f"{batch.device_id}:{batch.trip_id}"
     stored, cell_updates, skipped = [], {}, {}
     for w in batch.windows:
+        if w.t > now_ms + MAX_FUTURE_MS or (not admin and w.t < now_ms - MAX_AGE_MS) or (w.speed or 0) > MAX_SPEED_MS:
+            skipped["implausible"] = skipped.get("implausible", 0) + 1
+            continue
         raw = w.model_dump()
         s = score_window(raw)
         # A swerve is evidence even when the window itself can't be scored
@@ -134,6 +162,29 @@ def _build_cells():
             "hotspot": is_hotspot(trips, swerve_trips), "last_seen": c.get("last_seen"),
         })
     return out
+
+
+class BlockReq(BaseModel):
+    device_id: str = Field(max_length=64)
+    blocked: bool = True
+    note: str = Field(default="", max_length=200)
+
+
+@app.post("/api/admin/block")
+def admin_block(req: BlockReq, x_ingest_key: str = Header(default="")):
+    if not access.admin_ok(x_ingest_key):
+        raise HTTPException(401, "admin key required")
+    store.set_blocked(req.device_id, req.blocked, req.note)
+    blocklist.refresh()
+    return {"device_id": req.device_id, "blocked": req.blocked}
+
+
+@app.get("/api/admin/devices")
+def admin_devices(x_ingest_key: str = Header(default="")):
+    if not access.admin_ok(x_ingest_key):
+        raise HTTPException(401, "admin key required")
+    return {"devices": store.device_summary() if hasattr(store, "device_summary") else [],
+            "blocked": sorted(store.blocked())}
 
 
 @app.get("/api/cells")
